@@ -9,20 +9,20 @@ app.use(express.json());
 app.use(cors());
 
 // ==================================================================
-// CONFIGURAÇÕES DE AMBIENTE (PRODUÇÃO E LOCAL)
+// CONFIGURAÇÕES (TOKEN E AMBIENTE)
 // ==================================================================
-
-// Token do Mercado Pago
+// Tenta pegar do arquivo .env ou usa o valor fixo para testes locais
 const TOKEN_MERCADO_PAGO = process.env.MP_ACCESS_TOKEN || 'TEST-4710905963435609-112421-569d0b4108c6e302fd32e2960c74f74a-487723253'; 
 
-// Banco de Dados (Pega do Render/Atlas ou usa Local)
+// Tenta pegar a URI do MongoDB do ambiente ou usa o local
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/loja-virtual';
 
 // URL do Front End (Para onde o cliente volta depois de pagar)
 // Quando subir no Vercel, você vai configurar essa variável lá no Render
+// Se não tiver configurado, usa localhost por padrão
 const BASE_URL = process.env.FRONTEND_URL || 'http://localhost:5500';
 
-// Porta do Servidor
+// Porta dinâmica (obrigatório para deploy no Render)
 const PORT = process.env.PORT || 3001;
 
 mongoose.connect(MONGODB_URI)
@@ -34,12 +34,12 @@ const ProdutoSchema = new mongoose.Schema({
 });
 const Produto = mongoose.model('Produto', ProdutoSchema);
 
-// Rota de Teste (Ping)
+// Rota de Teste (Para saber se o servidor está no ar)
 app.get('/', (req, res) => {
-    res.send('Servidor da Loja está ONLINE! 🚀');
+    res.send('Servidor da Loja Virtual está rodando! 🚀');
 });
 
-// Listar Produtos
+// Rota 1: Listar Produtos
 app.get('/api/produtos', async (req, res) => {
     try {
         const produtos = await Produto.find();
@@ -49,13 +49,13 @@ app.get('/api/produtos', async (req, res) => {
     }
 });
 
-// Popular Banco
+// Rota 2: Popular Banco (Com imagem corrigida)
 app.get('/api/popular-banco', async (req, res) => {
     const catalogoInicial = [
         { id: 1, nome: 'Fone Bluetooth JBL', preco: 249.90, categoria: 'eletronicos', img: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=400&q=80' },
         { id: 2, nome: 'Smartwatch Xiaomi Mi Band 7', preco: 299.90, categoria: 'eletronicos', img: 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&w=400&q=80' },
         { id: 3, nome: 'Camiseta Minimalista Branca', preco: 79.90, categoria: 'roupas', img: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=400&q=80' },
-        { id: 4, nome: 'Tênis Nike Revolution', preco: 329.90, categoria: 'calcados', img: 'https://images.unsplash.com/photo-1606107557195-0e29a4b5b4aa?auto=format&fit=crop&w=400&q=80' },
+        { id: 4, nome: 'Tênis Nike Revolution', preco: 329.90, categoria: 'calcados', img: 'https://images.unsplash.com/photo-1606107557195-0e29a4b5b4aa?auto=format&fit=crop&w=400&q=80' }, // Imagem Nova
         { id: 6, nome: 'Notebook Gamer Dell G15', preco: 5499.00, categoria: 'eletronicos', img: 'https://images.unsplash.com/photo-1593642634315-48f5414c3ad9?auto=format&fit=crop&w=400&q=80' }
     ];
     
@@ -68,12 +68,14 @@ app.get('/api/popular-banco', async (req, res) => {
     }
 });
 
-// Criar Pagamento
+// Rota 3: Criar Pagamento (Robusta)
 app.post('/api/criar-pagamento', async (req, res) => {
     const { itensDoCarrinho, cpfComprador } = req.body;
     
     try {
-        if (!itensDoCarrinho || itensDoCarrinho.length === 0) throw new Error("Carrinho vazio");
+        if (!itensDoCarrinho || itensDoCarrinho.length === 0) {
+            throw new Error("Carrinho vazio");
+        }
 
         // 1. Baixa de Estoque
         console.log("🔄 Processando estoque...");
@@ -107,7 +109,7 @@ app.post('/api/criar-pagamento', async (req, res) => {
                     number: cpfComprador || "19119119100" 
                 }
             },
-            // AQUI ESTÁ A MÁGICA: Usa a variável BASE_URL
+            // AQUI ESTÁ A MÁGICA: Usa a variável BASE_URL para redirecionar
             back_urls: {
                 success: `${BASE_URL}/sucesso.html`,
                 failure: `${BASE_URL}/index.html`,
@@ -116,6 +118,7 @@ app.post('/api/criar-pagamento', async (req, res) => {
             auto_return: "approved"
         };
 
+        // 3. Chamada à API do Mercado Pago
         const respostaMP = await fetch("https://api.mercadopago.com/checkout/preferences", {
             method: "POST",
             headers: {
@@ -127,12 +130,14 @@ app.post('/api/criar-pagamento', async (req, res) => {
 
         const dadosMP = await respostaMP.json();
 
-        // Tratamento de erro (Retry sem auto_return)
+        // Tratamento de erro (Retry sem auto_return se falhar)
         if (!respostaMP.ok) {
             console.log("⚠️ Erro MP (tentando fallback):", JSON.stringify(dadosMP, null, 2));
             
             if (dadosMP.message && dadosMP.message.includes("auto_return")) {
+                console.log("🔄 Retentando sem auto_return...");
                 delete dadosPagamento.auto_return;
+                
                 const retry = await fetch("https://api.mercadopago.com/checkout/preferences", {
                     method: "POST",
                     headers: {
@@ -142,12 +147,14 @@ app.post('/api/criar-pagamento', async (req, res) => {
                     body: JSON.stringify(dadosPagamento)
                 });
                 const dadosRetry = await retry.json();
+                
                 if (!retry.ok) throw new Error(dadosRetry.message);
                 return res.json({ url_pagamento: dadosRetry.init_point });
             }
-            throw new Error(dadosMP.message);
+            throw new Error(dadosMP.message || "Erro ao criar preferência");
         }
 
+        console.log("✅ Link gerado:", dadosMP.init_point);
         res.json({ url_pagamento: dadosMP.init_point });
 
     } catch (error) {
@@ -157,5 +164,7 @@ app.post('/api/criar-pagamento', async (req, res) => {
 });
 
 app.listen(PORT, () => {
+    console.log('------------------------------------------------');
     console.log(`🚀 SERVIDOR RODANDO NA PORTA ${PORT}`);
+    console.log('------------------------------------------------');
 });
